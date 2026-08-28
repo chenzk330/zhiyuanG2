@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""G2 设备端 GR00T 适配器。
+
+复用 ``G2_arm_right_adapter.py`` 的 TCP 协议和 GDK 驱动，并在真实下发前增加
+有限值检查与单条命令的关节变化限幅。将本文件和 G2_arm_right_adapter.py 一起
+部署到机器人后运行。
+"""
+
+import argparse
+import math
+import threading
+import time
+from typing import List
+
+import G2_arm_right_adapter as base
+
+
+# G2_t2_crsB_omnipicker.urdf 中的右臂硬限位。向内留 0.005 rad，避免浮点、
+# 标定和不同固件的边界误差导致 GDK 拒绝整条 JointControlRequest。
+JOINT_LIMIT_MARGIN = 0.005
+RIGHT_ARM_LOWER = (-3.0718, -2.0595, -3.0718, -2.4959, -3.0718, -1.0123, -1.5359)
+RIGHT_ARM_UPPER = (3.0718, 2.0595, 3.0718, 1.0123, 3.0718, 1.0123, 1.5359)
+
+
+class SafeG2Dock(base.G2Dock):
+    """带有关节单步限幅的 G2Dock。"""
+
+    def __init__(self, *, max_joint_step: float, **kwargs):
+        super().__init__(**kwargs)
+        self.max_joint_step = max_joint_step
+
+    def set_right_arm_state(self, joints: List[float], gripper: float) -> None:
+        if not self.enable_control:
+            return
+        values = [*joints, gripper]
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f"拒绝包含 NaN/Inf 的动作: {values}")
+
+        current = self.read_arm_state()[:7]
+        step_limited = [
+            max(now - self.max_joint_step, min(now + self.max_joint_step, target))
+            for now, target in zip(current, joints, strict=True)
+        ]
+        limited = [
+            max(lower + JOINT_LIMIT_MARGIN, min(upper - JOINT_LIMIT_MARGIN, target))
+            for target, lower, upper in zip(
+                step_limited, RIGHT_ARM_LOWER, RIGHT_ARM_UPPER, strict=True
+            )
+        ]
+        if any(abs(target - safe) > 1e-6 for target, safe in zip(joints, limited, strict=True)):
+            print(
+                "[groot:safety] 动作已按单步变化/URDF硬限位裁剪: "
+                f"requested={[round(v, 4) for v in joints]} "
+                f"safe={[round(v, 4) for v in limited]}",
+                flush=True,
+            )
+        super().set_right_arm_state(limited, gripper)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="G2 设备端 GR00T TCP/GDK 适配器")
+    parser.add_argument("--jpeg-quality", type=int, default=80)
+    parser.add_argument(
+        "--max-joint-step",
+        type=float,
+        default=0.03,
+        help="每条命令允许的最大关节变化（rad，默认 0.03）",
+    )
+    parser.add_argument(
+        "--enable-control", action="store_true", help="真实下发动作；默认仅返回 ACK，不驱动机器人"
+    )
+    args = parser.parse_args()
+    if not 1 <= args.jpeg_quality <= 100:
+        parser.error("--jpeg-quality 必须在 1..100 范围")
+    if args.max_joint_step <= 0:
+        parser.error("--max-joint-step 必须大于 0")
+
+    dock = SafeG2Dock(
+        jpeg_quality=args.jpeg_quality,
+        enable_control=args.enable_control,
+        max_joint_step=args.max_joint_step,
+    )
+    dock.initialize()
+
+    threads = [
+        threading.Thread(target=base.read_loop, args=(dock,), daemon=True, name="groot-read"),
+        threading.Thread(target=base.serve_9002, args=(dock,), daemon=True, name="groot-arm"),
+        threading.Thread(
+            target=base.serve_camera,
+            args=(base.HEAD_CAM_PORT, base.get_snapshot_head, "9003", dock),
+            daemon=True,
+            name="groot-head",
+        ),
+        threading.Thread(
+            target=base.serve_camera,
+            args=(base.WRIST_CAM_PORT, base.get_snapshot_wrist, "9004", dock),
+            daemon=True,
+            name="groot-wrist",
+        ),
+        threading.Thread(
+            target=base.set_joint_loop, args=(dock,), daemon=True, name="groot-set-joint"
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+
+    mode = "CONTROL ENABLED" if args.enable_control else "DRY RUN / ACK ONLY"
+    print(f"[groot] {mode}", flush=True)
+    print("[groot] arm=9002 head=9003 wrist=9004", flush=True)
+    if args.enable_control:
+        print("[groot] 警告：机器人会真实运动，请清空周围区域并准备急停", flush=True)
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n[groot] 正在退出...", flush=True)
+    finally:
+        dock.release()
+
+
+if __name__ == "__main__":
+    main()

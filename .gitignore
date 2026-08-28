@@ -1,0 +1,16 @@
+services/logs/
+services/__pycache__/
+services/python3.*
+runtime/__pycache__/
+python3.*
+*.pyc
+lerobot/__pycache__/
+dds_view.*
+
+# 相机运行产物
+images/
+*.raw
+
+# 运行时日志/进程文件
+*.log
+*.pid

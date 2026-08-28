@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>G2 机器人控制台</title>
+    <link rel="stylesheet" href="bootstrap.min.css">
+    <link rel="stylesheet" href="css/vue_app.css">
+</head>
+<body>
+    <div id="app"></div>
+
+    <!-- paho-mqtt（全局 Paho 对象） -->
+    <script src="paho-mqtt.min.js"></script>
+
+    <!-- 本地 ES module 映射（不从 CDN 加载） -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "./libs/three.module.js",
+            "three/addons/": "./libs/three_addons/",
+            "three/examples/jsm/": "./libs/three_addons/",
+            "vue": "./libs/vue.esm-browser.prod.js",
+            "urdf-loader": "./libs/urdf-loader.js"
+        }
+    }
+    </script>
+    <script type="module" src="js/vue_app.js?v=20260726a"></script>
+</body>
+</html>
