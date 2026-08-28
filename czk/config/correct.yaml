@@ -1,0 +1,115 @@
+# =============================================================================
+# 三步纠偏参数配置 (取货/放货分场景)
+# 参考: /home/agi/wzd/chassis_correct_all.py 与 jitai_correct_all.py
+# 说明: 所有硬参数复用 wzd 实战值, 后续可在本文件直接调优, 无需改代码
+# =============================================================================
+
+# ── 场景配置 ──────────────────────────────────────────────────────────
+# 每个场景指定: 模型文件 + 目标深度 + 输出目录 + (可选)场景级LR目标覆盖
+# lr_target_x_override: 不设则使用下方 lr.target_x (全局默认)
+#   - 机器人偏右 → 调大 target_x (+10~20px)
+#   - 机器人偏左 → 调小 target_x
+scenes:
+  pick:
+    model_ref: "models/shangliaoqu.ref"   # 取货场景辉羲 ref 模型
+    model_pt:  "models/best_new.pt"       # 取货场景 ultralytics pt 模型 (回退用)
+    target_depth: 1050                    # 前后纠偏目标深度 mm (取货停靠距离)
+    output_dir: "output/pick"             # 结果图保存目录
+    lr_target_x_override: 320             # 取货LR目标: 修正偏左, 从340调回320 (光学中心)
+    # px_to_meter_override: 0.002584      # 取货场景标定值 (每次pipeline运行时自动标定并覆盖, 首次为空用全局lr.px_to_meter)
+    px_to_meter_override: 0.002780   # m/px (场景标定于 20260827_104833)
+    px_to_meter_calib_depth: 1050   # 标定时的目标深度mm (目标深度改变时自动重新标定)
+  place:
+    model_ref: "models/jitai_new.ref"     # 放货场景辉羲 ref 模型
+    model_pt:  "models/jitai.pt"          # 放货场景 ultralytics pt 模型
+    target_depth: 800                     # 前后纠偏目标深度 mm (从850改为800)
+    output_dir: "output/place"
+    lr_target_x_override: 320             # 放货LR目标: 修正偏左, 从330调小到320 (光学中心)
+    # px_to_meter_override: 0.002584      # 放货场景标定值 (每次pipeline运行时自动标定并覆盖)
+
+# ── 前后纠偏 (FB) ─────────────────────────────────────────────────────
+    px_to_meter_override: 0.002170   # m/px (场景标定于 20260827_112056)
+    px_to_meter_calib_depth: 800   # 标定时的目标深度mm (目标深度改变时自动重新标定)
+fb:
+  threshold: 10               # 收敛阈值 mm (|delta| < 此值视为收敛, 原5mm过严导致振荡)
+  max_iter: 5                 # 最大迭代次数
+  settle_time: 2.0            # 移动后稳定时间 (秒)
+  max_single_move: 0.30       # 单次最大移动距离 m (超过则截断)
+  min_depth: 400              # 最小安全深度 mm (低于此值立即终止, 防止撞架)
+  max_depth_diff: 300         # a/b 最大允许深度差 mm (超过判定误检)
+  gain: 1.0                   # 初始增益 (自适应会调整, 范围 0.5~2.0, 上限下调防过冲)
+  gain_min: 0.5               # 自适应增益下限
+  gain_max: 1.5               # 自适应增益上限 (从3.0下调, 减少过冲)
+  # 预移动: 克服底盘静摩擦 (小距离移动时先反向走一段, 净位移不变)
+  pre_move: true
+  pre_move_m: 0.05            # 预移动反向距离 m
+  pre_move_threshold: 0.02    # 触发预移动的距离阈值 m (小于此值才预热)
+
+# ── 角度纠偏 (YAW) ────────────────────────────────────────────────────
+# 目标: a/b 连线斜率 → 0 (连线变水平, 等价中垂线变垂直)
+yaw:
+  threshold_deg: 1.0          # 收敛阈值 度 (从0.5放宽, 1°以内肉眼基本看不出)
+  max_iter: 5
+  settle_time: 1.5
+  gain: 2.0                   # 初始增益
+  gain_min: 0.5               # 自适应增益下限
+  gain_max: 3.0               # 自适应增益上限
+  max_single_rotation: 10.0   # 单次最大旋转 度 (从15°下调, 减少单次过冲)
+  # 预旋转: 克服底盘静摩擦 (15°太大容易抖飞, 改为5°且阈值收紧)
+  pre_rotate: true
+  pre_rotate_deg: 5.0         # 预旋转角度 度 (从15°降到5°, 只在真的需要克服静摩擦时用)
+  pre_rotate_threshold: 1.0   # 触发预旋转的角度阈值 度 (从3°降到1°, 只有真的很小的旋转才预热)
+
+# ── 左右纠偏 (LR) ─────────────────────────────────────────────────────
+# 目标: a/b 中点 x → 图像中心 (320px), 等价中垂线穿过图像中心
+# 补偿系统偏移: 机器人偏右则调大 target_x(+10~20px), 偏左则调小
+lr:
+  target_x: 330               # 目标 x 坐标 px (原320, +10补偿肉眼偏右)
+  threshold: 8                # 收敛阈值 px
+  max_iter: 5
+  settle_time: 1.5
+  # 标定系数: 1 像素 ≈ 多少米
+  # 来源: wzd 2026-08-13 重新标定, 剔除异常点, R²=0.98
+  # 如需重新标定: python calibrate.py --rebuild
+  px_to_meter: 0.002584       # m/px
+  gain: 1.0                   # 初始增益
+  gain_min: 0.5               # 自适应增益下限
+  gain_max: 5.0               # 自适应增益上限 (从10降下来, 避免增益被过度放大)
+  max_single_move: 0.20       # 单次最大横移距离 m (超过则截断, 防止增益放大后的大幅移动)
+  # 预横移: 克服底盘静摩擦
+  pre_move: true
+  pre_move_m: 0.05
+  pre_move_threshold: 0.01    # 触发预横移的距离阈值 m
+
+# ── 通用参数 ──────────────────────────────────────────────────────────
+common:
+  mqtt_broker: "localhost"
+  mqtt_port: 1883
+  warmup_wait: 0.2            # 预热拍照后等待时间 (秒)
+  image_save_dir: "/data/wxf/wxf0721/images"  # 相机 save_photo 输出目录
+  gdk_services_dir: "/data/wxf/wxf0721/services"  # agibot_gdk 模块路径
+  minth_dir: "/data/wxf/wxf0721/runtime"  # minth 库路径
+  batch_infer_bin: "/home/agi/app/bin/examples/batch_inference"  # 辉羲推理工具
+
+# ── YOLO 推理参数 ─────────────────────────────────────────────────────
+yolo:
+  imgsz: 640                  # 推理输入尺寸
+  conf: 0.25                  # 默认置信度阈值
+  min_conf: 0.10              # 最低有效置信度 (低于此值丢弃, 防误检)
+  iou: 0.45                   # NMS IoU 阈值
+  # 多阈值回退序列 (默认 conf 检测不到 a/b 时按序降低)
+  conf_fallback: [0.25, 0.15, 0.10]
+  # 位置回退: a/b 缺失时, 取 top2 高置信度框水平排列判定
+  position_fallback:
+    enabled: true
+    min_conf: 0.25            # top2 最低置信度要求
+    y_diff_factor: 2.0        # y_diff 阈值 = max(avg_h * factor, 60)
+    x_dist_min: 30            # 最小水平距离 px
+
+# ── 绘图颜色 (BGR) ────────────────────────────────────────────────────
+colors:
+  line_ab:   [0, 255, 0]      # a/b 连线 (绿)
+  mid_point: [0, 0, 255]      # 中点 (红)
+  perp_line: [255, 0, 0]      # 中垂线 (蓝)
+  center:    [255, 255, 0]   # 图像中心线 (黄)
+  text:      [255, 255, 255]  # 文本 (白)
